@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.csv
+*.png
+results/
+.DS_Store
+.idea/
+.vscode/
+conceptnet_cache.json
+divergence_report.txt
