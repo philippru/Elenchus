@@ -20,7 +20,7 @@ For each example the pipeline runs six modular, swappable steps:
 | # | Step | What it does |
 |---|------|--------------|
 | 1 | **IA extraction** | Use e-SNLI human highlights as a proxy for CCT's *Impactful Arguments* (with marked-sentence and content-word fallbacks). |
-| 2 | **ConceptNet lookup** | For each IA, fetch NLI-relevant relations (`IsA`, `HasProperty`, `PartOf`, `Antonym`, `Causes`, …), rate-limited and cached. |
+| 2 | **KB lookup** | For each IA, fetch NLI-relevant relations (`IsA`, `HasProperty`, `PartOf`, `Antonym`, `Causes`, …) from ConceptNet (rate-limited + cached) or, with `--kb wordnet`, from local WordNet — use the latter while api.conceptnet.io is unstable. |
 | 3 | **ASP rule layer** | Feed the relations + gold label into a small **Clingo** program (`rules.lp`) that infers entailment / contradiction / neutral support and a consistency verdict. |
 | 4 | **SCC score** | Binary consistency `{0,1}`, plus an optional evidence-weighted variant. |
 | 5 | **CCT proxy** | `1 − cos(emb(explanation), emb(explanation \ IAs))` via `all-MiniLM-L6-v2` — embedding shift when IAs are masked. |
@@ -39,9 +39,19 @@ pip install -r requirements.txt
 # Full run: 100 stratified e-SNLI test examples (~33/33/34).
 python pipeline.py --n 100 --out-dir .
 
+# Offline, deterministic run with WordNet as the knowledge source
+# (recommended while api.conceptnet.io is unstable / returning 502s).
+python pipeline.py --n 100 --kb wordnet --out-dir results
+
 # Quick dev run using only the ConceptNet cache (no API calls).
 python pipeline.py --n 30 --no-network
 ```
+
+The e-SNLI test split (`esnli_test.csv`, ~7 MB, with human highlight
+annotations) and — for `--kb wordnet` — the WordNet corpus (~10 MB) are
+downloaded automatically on first run.
+
+> **Results of a first experimental run:** see [RESULTS.md](./RESULTS.md).
 
 ### Outputs
 
@@ -52,7 +62,7 @@ python pipeline.py --n 30 --no-network
 ## The symbolic layer
 
 The ASP rules live in [`rules.lp`](./rules.lp) and are intentionally minimal
-and commented so you can extend them. Per-example facts (`is_a/2`,
+and commented so you can extend them. Per-example facts (`ia/1`, `is_a/2`,
 `has_property/2`, `antonym/2`, …, `label/1`) are generated at runtime and
 prepended before grounding. The program is stratified, so the answer set is
 unique.

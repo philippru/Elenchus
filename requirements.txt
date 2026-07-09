@@ -1,6 +1,6 @@
 # Elenchus — SCC pipeline dependencies (Python 3.10+)
-datasets>=2.18
 requests>=2.31
+nltk>=3.8
 clingo>=5.6
 sentence-transformers>=2.6
 pandas>=2.0

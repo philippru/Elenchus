@@ -1,10 +1,13 @@
 % ============================================================================
 % Elenchus — SCC symbolic verification layer (Clingo / ASP)
 % ----------------------------------------------------------------------------
-% This file holds ONLY the static rule set. Per-example facts (is_a/2,
+% This file holds ONLY the static rule set. Per-example facts (ia/1, is_a/2,
 % has_property/2, antonym/2, part_of/2, causes/2, obstructs/2, label/1) are
 % generated dynamically by pipeline.py and prepended to this program before
-% grounding. Keep the rules minimal and extensible — document every rule.
+% grounding. ia/1 marks the impactful arguments of the example itself; the
+% first argument of every binary fact is always an IA, the second may be any
+% ConceptNet concept. Keep the rules minimal and extensible — document every
+% rule.
 % ============================================================================
 
 % ---------------------------------------------------------------------------
@@ -22,11 +25,17 @@ supports_entailment :- part_of(X, W), part_of(Y, W), X != Y.      % shared whole
 % An antonym relation among the impactful arguments — directly, or via two
 % properties that are antonyms of each other — is evidence of contradiction.
 % A `causes`/`obstructs` clash is treated as a (weaker) contradiction signal.
+%
+% Direct antonymy requires BOTH terms to be IAs of the example: nearly every
+% adjective has *some* antonym in ConceptNet, so antonym(T1, T2) alone would
+% fire on almost any example. Only an antonym pair that actually occurs in
+% the premise/hypothesis is evidence of contradiction.
 % ---------------------------------------------------------------------------
-supports_contradiction :- antonym(T1, T2).                        % direct antonymy
+supports_contradiction :- antonym(T1, T2), ia(T1), ia(T2).        % direct antonymy in-example
 supports_contradiction :- antonym(X, Y),                          % property-level antonymy
                           has_property(T1, X),
-                          has_property(T2, Y).
+                          has_property(T2, Y),
+                          T1 != T2.
 supports_contradiction :- causes(X, E), obstructs(Y, E), X != Y.  % one causes what another blocks
 
 % ---------------------------------------------------------------------------

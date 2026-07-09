@@ -55,6 +55,9 @@ LABEL_NAMES = {0: "entailment", 1: "neutral", 2: "contradiction"}
 ENTAILMENT_RELS = {"IsA", "HasProperty", "PartOf", "HasA", "MannerOf"}
 CONTRADICTION_RELS = {"Antonym", "ObstructedBy", "Causes", "DistinctFrom"}
 RELEVANT_RELS = ENTAILMENT_RELS | CONTRADICTION_RELS
+# Relations that hold in both directions; all others are kept only when the
+# queried term is the *start* node (otherwise the fact would be reversed).
+SYMMETRIC_RELS = {"Antonym", "DistinctFrom"}
 
 
 # =========================================================================== #
@@ -83,23 +86,41 @@ class Example:
 # =========================================================================== #
 # Step 0 — dataset loading + stratified sampling
 # =========================================================================== #
-def load_examples(n: int = 100, seed: int = 42) -> list[Example]:
-    """
-    Load e-SNLI test split and draw a label-stratified sample of size ~n
-    (~1/3 per class). Robust to the different field names HF ships e-SNLI
-    under across versions.
-    """
-    from datasets import load_dataset
+ESNLI_TEST_URL = ("https://raw.githubusercontent.com/OanaMariaCamburu/"
+                  "e-SNLI/master/dataset/esnli_test.csv")
+LABEL_IDS = {"entailment": 0, "neutral": 1, "contradiction": 2}
 
-    log.info("Loading e-SNLI test split ...")
-    ds = load_dataset("esnli", split="test")
+
+def load_examples(n: int = 100, seed: int = 42,
+                  csv_path: Path = Path("esnli_test.csv")) -> list[Example]:
+    """
+    Load the official e-SNLI test split (Camburu et al. 2018) and draw a
+    label-stratified sample of size ~n (~1/3 per class).
+
+    Loads from the authors' CSV (downloaded on first use) rather than the
+    HF 'esnli' dataset: the HF copy is script-based (unsupported by
+    datasets>=3) and lacks the human-highlight columns
+    (Sentence1_marked_1 / Sentence2_marked_1) that IA extraction needs.
+    """
+    import pandas as pd
+
+    if not csv_path.exists():
+        log.info("Downloading e-SNLI test split to %s ...", csv_path)
+        import requests
+        resp = requests.get(ESNLI_TEST_URL, timeout=60)
+        resp.raise_for_status()
+        csv_path.write_bytes(resp.content)
+
+    log.info("Loading e-SNLI test split from %s ...", csv_path)
+    df = pd.read_csv(csv_path).fillna("")
 
     # Bucket indices by label for stratified sampling.
     per_class = max(1, n // 3)
     buckets: dict[int, list[int]] = {0: [], 1: [], 2: []}
-    for i, lab in enumerate(ds["label"]):
-        if lab in buckets:
-            buckets[lab].append(i)
+    for i, lab in enumerate(df["gold_label"]):
+        lab_id = LABEL_IDS.get(str(lab).strip().lower())
+        if lab_id is not None:
+            buckets[lab_id].append(i)
 
     import random
     rng = random.Random(seed)
@@ -114,15 +135,15 @@ def load_examples(n: int = 100, seed: int = 42) -> list[Example]:
 
     examples: list[Example] = []
     for new_idx, i in enumerate(chosen):
-        row = ds[i]
+        row = {k: str(v) for k, v in df.iloc[i].to_dict().items()}
         examples.append(
             Example(
                 idx=new_idx,
-                premise=row["premise"],
-                hypothesis=row["hypothesis"],
-                label=row["label"],
+                premise=row["Sentence1"],
+                hypothesis=row["Sentence2"],
+                label=LABEL_IDS[row["gold_label"].strip().lower()],
                 explanation=_first_present(
-                    row, ["explanation_1", "explanation", "explanation_2"]
+                    row, ["Explanation_1", "Explanation_2", "Explanation_3"]
                 ),
             )
         )
@@ -250,18 +271,23 @@ class ConceptNet:
             return self.cache[key]
 
         result = {"term": term, "relations": [], "antonyms": []}
+        cacheable = True
         if self.network:
-            result = self._fetch(key, term, result)
+            result, cacheable = self._fetch(key, term, result)
         else:
             log.debug("offline: skip ConceptNet lookup for %r", term)
 
-        self.cache[key] = result
-        self._dirty += 1
-        if self._dirty >= 20:
-            self.flush()
+        if cacheable:
+            self.cache[key] = result
+            self._dirty += 1
+            if self._dirty >= 20:
+                self.flush()
         return result
 
-    def _fetch(self, key: str, term: str, result: dict) -> dict:
+    def _fetch(self, key: str, term: str, result: dict) -> tuple[dict, bool]:
+        """Return (result, cacheable). Transient errors (5xx, timeouts) must
+        NOT be cached, or one API outage would poison the cache with
+        permanently-empty terms; only 404s and successes are cached."""
         import requests
         url = self.API.format(term=key)
         try:
@@ -269,12 +295,19 @@ class ConceptNet:
             resp = requests.get(url, params={"limit": 50}, timeout=15)
             if resp.status_code == 404:
                 log.info("ConceptNet: %r not found (404) — skipping.", term)
-                return result
+                return result, True
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:  # noqa: BLE001 — never crash on one bad term
             log.warning("ConceptNet lookup failed for %r: %s", term, exc)
-            return result
+            return result, False
+
+        node = f"/c/en/{key}"
+
+        def _is_our_node(node_obj: dict) -> bool:
+            # Node terms look like "/c/en/dog" or sense-tagged "/c/en/dog/n".
+            t = node_obj.get("term", "")
+            return t == node or t.startswith(node + "/")
 
         for edge in data.get("edges", []):
             rel = edge.get("rel", {}).get("label", "")
@@ -282,11 +315,20 @@ class ConceptNet:
                 continue
             start = edge.get("start", {})
             end = edge.get("end", {})
-            # Keep the edge oriented away from our term.
-            if start.get("label", "").lower() == term.lower():
+            # English-only: ConceptNet mixes languages in /c/en edges.
+            if start.get("language", "en") != "en" or \
+               end.get("language", "en") != "en":
+                continue
+            # Asymmetric relations (IsA, PartOf, ...) are only valid when our
+            # term is the start node — otherwise the fact would be reversed
+            # (e.g. querying "animal" on the edge "dog IsA animal" must not
+            # yield is_a(animal, dog)). Symmetric ones may match either side.
+            if _is_our_node(start):
                 target = end.get("label", "")
-            else:
+            elif rel in SYMMETRIC_RELS and _is_our_node(end):
                 target = start.get("label", "")
+            else:
+                continue
             target = (target or "").strip()
             if not target:
                 continue
@@ -294,7 +336,7 @@ class ConceptNet:
             if rel == "Antonym":
                 result["antonyms"].append(target)
         log.debug("%r -> %d relevant relations", term, len(result["relations"]))
-        return result
+        return result, True
 
     def flush(self) -> None:
         self.cache_path.write_text(
@@ -303,7 +345,88 @@ class ConceptNet:
         self._dirty = 0
 
 
-def fetch_relations(ex: Example, cn: ConceptNet) -> dict[str, dict]:
+class WordNetKB:
+    """
+    Offline WordNet knowledge source, drop-in compatible with ConceptNet's
+    lookup() interface. Motivation: the public ConceptNet API
+    (api.conceptnet.io) has been unreliable since 2024 and may 502 for every
+    request; WordNet is local, deterministic, and covers the same NLI-relevant
+    signal. Relation mapping onto the shared predicate vocabulary:
+
+        hypernyms / instance hypernyms   -> IsA
+        part / member holonyms           -> PartOf
+        noun<->adjective attributes      -> HasProperty
+        verb causes                      -> Causes
+        lemma antonyms                   -> Antonym
+    """
+
+    #: cap synsets per term and lemmas per related synset to bound fact count
+    MAX_SYNSETS = 6
+    MAX_LEMMAS = 3
+
+    def __init__(self):
+        import nltk
+        try:
+            from nltk.corpus import wordnet as wn
+            wn.synsets("dog")  # force-load; raises LookupError if missing
+        except LookupError:
+            log.info("Downloading WordNet corpus (one-time, ~10 MB) ...")
+            nltk.download("wordnet", quiet=True)
+            from nltk.corpus import wordnet as wn
+        self.wn = wn
+        self.cache: dict[str, dict] = {}  # in-memory; corpus is already local
+
+    def lookup(self, term: str) -> dict:
+        key = term.lower().strip().replace(" ", "_")
+        if key in self.cache:
+            return self.cache[key]
+
+        relations: list[tuple[str, str]] = []
+        antonyms: list[str] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(rel: str, target: str) -> None:
+            target = target.replace("_", " ")
+            if (rel, target.lower()) in seen:
+                return
+            seen.add((rel, target.lower()))
+            relations.append((rel, target))
+            if rel == "Antonym":
+                antonyms.append(target)
+
+        wn = self.wn
+        base = wn.morphy(key) or key  # normalise inflection for lemma match
+        for syn in wn.synsets(key)[: self.MAX_SYNSETS]:
+            for hyp in syn.hypernyms() + syn.instance_hypernyms():
+                for lem in hyp.lemma_names()[: self.MAX_LEMMAS]:
+                    add("IsA", lem)
+            for hol in syn.part_holonyms() + syn.member_holonyms():
+                for lem in hol.lemma_names()[: self.MAX_LEMMAS]:
+                    add("PartOf", lem)
+            for attr in syn.attributes():
+                for lem in attr.lemma_names()[: self.MAX_LEMMAS]:
+                    add("HasProperty", lem)
+            for cause in syn.causes():
+                for lem in cause.lemma_names()[: self.MAX_LEMMAS]:
+                    add("Causes", lem)
+            # Antonymy is lemma-level in WordNet: only take antonyms of the
+            # lemma we actually looked up (after inflection normalisation),
+            # not of every synonym in the synset.
+            for lemma in syn.lemmas():
+                if lemma.name().lower() != base:
+                    continue
+                for ant in lemma.antonyms():
+                    add("Antonym", ant.name())
+
+        result = {"term": term, "relations": relations, "antonyms": antonyms}
+        self.cache[key] = result
+        return result
+
+    def flush(self) -> None:  # interface parity with ConceptNet
+        pass
+
+
+def fetch_relations(ex: Example, cn) -> dict[str, dict]:
     """Populate ex.relations: {term: {relations, antonyms}} for every IA."""
     rels: dict[str, dict] = {}
     for term in ex.ias:
@@ -322,6 +445,22 @@ def _atom(s: str) -> str:
     if not a[0].isalpha():
         a = "c_" + a
     return a[:40]
+
+
+def _lemma(s: str) -> str:
+    """
+    Inflection-normalise a single word via WordNet morphy (best-effort) so
+    that e.g. 'sleeping' and 'sleeps' ground to the same ASP constant as
+    'sleep' — without this, antonym pairs across premise/hypothesis rarely
+    unify. Multi-word phrases and unknown words pass through unchanged.
+    """
+    if " " in s or "_" in s:
+        return s
+    try:
+        from nltk.corpus import wordnet as wn
+        return wn.morphy(s.lower()) or s
+    except Exception:  # noqa: BLE001 — nltk missing/corpus absent: identity
+        return s
 
 
 # Map ConceptNet relation -> ASP predicate name (binary).
@@ -345,16 +484,23 @@ def generate_asp_facts(ex: Example) -> str:
     """
     lines: list[str] = [f"label({ex.label_name})."]
     emitted: set[str] = set()
+
+    def emit(fact: str) -> None:
+        if fact not in emitted:
+            emitted.add(fact)
+            lines.append(fact)
+
     for term, payload in ex.relations.items():
-        t = _atom(term)
+        # Ground on the lemma so inflected variants unify across facts.
+        t = _atom(_lemma(term))
+        # Mark every impactful argument so rules can require that both ends
+        # of a relation actually occur in the example (see rules.lp).
+        emit(f"ia({t}).")
         for rel, target in payload.get("relations", []):
             pred = _REL2PRED.get(rel)
             if not pred:
                 continue
-            fact = f"{pred}({t}, {_atom(target)})."
-            if fact not in emitted:
-                emitted.add(fact)
-                lines.append(fact)
+            emit(f"{pred}({t}, {_atom(_lemma(target))}).")
     return "\n".join(lines) + "\n"
 
 
@@ -398,14 +544,15 @@ def scc_score(ex: Example, evidence_pivot: float = 5.0) -> tuple[float, float]:
     Primary SCC score is the binary consistency verdict {0,1}.
 
     Nuanced variant weights the verdict by the amount of ConceptNet evidence:
-    confidence = min(1, n_relations / pivot). A consistent verdict backed by
-    more relations scores higher; an inconsistent one is penalised more when
-    there was ample evidence to the contrary.
+    confidence = min(1, n_relations / pivot). The binary verdict is shrunk
+    toward the uninformative midpoint 0.5 when evidence is scarce — a verdict
+    backed by no relations carries no information, so it must not score as if
+    it were certain (and certainly must not invert the verdict).
     """
     base = 1.0 if ex.consistent else 0.0
     n_rel = sum(len(p.get("relations", [])) for p in ex.relations.values())
     confidence = min(1.0, n_rel / evidence_pivot)
-    weighted = confidence if ex.consistent else (1.0 - confidence)
+    weighted = 0.5 + (base - 0.5) * confidence
     return base, round(weighted, 4)
 
 
@@ -454,6 +601,7 @@ def to_dataframe(examples: list[Example]):
     import pandas as pd
     rows = []
     for e in examples:
+        verdict = getattr(e, "_verdict", {})
         rows.append({
             "idx": e.idx,
             "label": e.label_name,
@@ -463,6 +611,10 @@ def to_dataframe(examples: list[Example]):
             "ias": "|".join(e.ias),
             "n_relations": sum(len(p.get("relations", []))
                                for p in e.relations.values()),
+            "supports_entailment": verdict.get("supports_entailment", False),
+            "supports_contradiction": verdict.get("supports_contradiction",
+                                                  False),
+            "supports_neutral": verdict.get("supports_neutral", False),
             "consistent": e.consistent,
             "scc_score": e.scc_score,
             "scc_weighted": e.scc_weighted,
@@ -503,6 +655,8 @@ def make_scatter(df, out_path: Path) -> None:
 
 
 def divergence_analysis(df) -> str:
+    import numpy as np
+
     by_label = (df.groupby("label")["divergence"]
                   .agg(["mean", "std", "count"])
                   .sort_values("mean", ascending=False))
@@ -514,6 +668,34 @@ def divergence_analysis(df) -> str:
     lines.append("")
     lines.append(f"Highest mean divergence: '{top}' "
                  f"(hypothesis predicts 'neutral').")
+
+    # Component means per label — needed to interpret *why* divergence differs.
+    lines.append("")
+    lines.append("Component means by label (CCT proxy / SCC / weighted SCC)")
+    lines.append("-" * 44)
+    comp = df.groupby("label")[["cct_proxy", "scc_score", "scc_weighted"]].mean()
+    for lab, r in comp.iterrows():
+        lines.append(f"  {lab:<14} cct={r['cct_proxy']:.3f}  "
+                     f"scc={r['scc_score']:.3f}  "
+                     f"scc_w={r['scc_weighted']:.3f}")
+
+    # One-sided permutation test: is mean divergence on Neutral higher than
+    # on the other two labels? (10k label shuffles, seeded.)
+    neut = df.loc[df["label"] == "neutral", "divergence"].to_numpy(float)
+    rest = df.loc[df["label"] != "neutral", "divergence"].to_numpy(float)
+    if len(neut) and len(rest):
+        obs = neut.mean() - rest.mean()
+        pooled = np.concatenate([neut, rest])
+        rng = np.random.default_rng(0)
+        n_perm, hits = 10_000, 0
+        for _ in range(n_perm):
+            rng.shuffle(pooled)
+            if pooled[:len(neut)].mean() - pooled[len(neut):].mean() >= obs:
+                hits += 1
+        p = (hits + 1) / (n_perm + 1)
+        lines.append("")
+        lines.append(f"Permutation test (neutral vs. rest, one-sided): "
+                     f"delta_mean={obs:+.3f}, p={p:.4f} ({n_perm} shuffles)")
     return "\n".join(lines)
 
 
@@ -560,7 +742,8 @@ def write_report(df, examples: list[Example], out_path: Path) -> None:
 # Orchestration
 # =========================================================================== #
 def run_pipeline(n: int, out_dir: Path, network: bool,
-                 cache_path: Path, sleep: float, seed: int) -> None:
+                 cache_path: Path, sleep: float, seed: int,
+                 kb: str = "conceptnet") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rules_program = (Path(__file__).parent / "rules.lp").read_text("utf-8")
 
@@ -574,7 +757,10 @@ def run_pipeline(n: int, out_dir: Path, network: bool,
              sum(len(e.ias) for e in examples) / max(1, len(examples)))
 
     # Step 2
-    cn = ConceptNet(cache_path=cache_path, sleep=sleep, network=network)
+    if kb == "wordnet":
+        cn = WordNetKB()
+    else:
+        cn = ConceptNet(cache_path=cache_path, sleep=sleep, network=network)
     for k, e in enumerate(examples, 1):
         e.relations = fetch_relations(e, cn)
         if k % 10 == 0:
@@ -619,6 +805,11 @@ def parse_args() -> argparse.Namespace:
                    help="seconds between ConceptNet requests (rate limit).")
     p.add_argument("--no-network", action="store_true",
                    help="use ConceptNet cache only; do not hit the API.")
+    p.add_argument("--kb", choices=["conceptnet", "wordnet"],
+                   default="conceptnet",
+                   help="knowledge source for step 2. 'wordnet' is offline "
+                        "and deterministic — use it when api.conceptnet.io "
+                        "is unreachable. Default: conceptnet.")
     p.add_argument("--seed", type=int, default=42, help="sampling seed.")
     return p.parse_args()
 
@@ -632,6 +823,7 @@ def main() -> None:
         cache_path=args.cache,
         sleep=args.sleep,
         seed=args.seed,
+        kb=args.kb,
     )
 
 
