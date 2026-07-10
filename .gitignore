@@ -1,13 +1,24 @@
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 .env
-*.csv
-*.png
-results/
+
+# OS / IDE
 .DS_Store
 .idea/
 .vscode/
-conceptnet_cache.json
+
+# Generated at runtime: dataset download (esnli_test.csv), ConceptNet cache,
+# and run outputs written by pipeline.py (any --out-dir).
+*.csv
+*.png
 divergence_report.txt
+conceptnet_cache.json
+
+# ...except the committed reference run (the numbers cited in RESULTS.md
+# and in the seminar report):
+!results/analysis.png
+!results/results.csv
+!results/divergence_report.txt

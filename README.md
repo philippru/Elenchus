@@ -42,7 +42,8 @@ For each example the pipeline runs six modular, swappable steps:
 ## Install
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Linux/macOS
+python -m venv .venv && .venv\Scripts\activate      # Windows (use a short path; see RESULTS.md)
 pip install -r requirements.txt
 ```
 
