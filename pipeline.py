@@ -4,13 +4,15 @@ Elenchus — Semantic Counterfactual Consistency (SCC)
 ====================================================
 
 A lightweight hybrid neurosymbolic faithfulness metric that extends the
-Continuous Counterfactual Test (CCT, Atanasova et al. 2023) with a symbolic
-verification layer.
+Correlational Counterfactual Test (CCT; Siegel et al. 2024) -- itself an
+instantiation of Correlational Explanatory Faithfulness on the Counterfactual
+Test (CT; Atanasova et al. 2023) -- with a symbolic verification layer.
 
 Pipeline (each step is an independent, swappable function):
 
     1. IA extraction      -> impactful arguments per e-SNLI example
-    2. ConceptNet lookup  -> relational facts per IA (rate-limited + cached)
+    2. KB lookup          -> relational facts per IA from ConceptNet
+                             (rate-limited + cached) or local WordNet
     3. ASP rule layer     -> Clingo verdict: consistent / inconsistent
     4. SCC score          -> {0,1} verdict (+ optional evidence-weighted score)
     5. CCT proxy score    -> embedding-shift faithfulness proxy
@@ -24,7 +26,7 @@ Run:
     python pipeline.py --n 100 --out-dir .
     python pipeline.py --n 30 --no-network   # dev run, ConceptNet cache only
 
-Dependencies: datasets, requests, clingo, sentence-transformers, pandas,
+Dependencies: requests, nltk, clingo, sentence-transformers, pandas,
 matplotlib, numpy. See requirements.txt.
 """
 from __future__ import annotations
@@ -543,7 +545,7 @@ def scc_score(ex: Example, evidence_pivot: float = 5.0) -> tuple[float, float]:
     """
     Primary SCC score is the binary consistency verdict {0,1}.
 
-    Nuanced variant weights the verdict by the amount of ConceptNet evidence:
+    Nuanced variant weights the verdict by the amount of knowledge-base evidence:
     confidence = min(1, n_relations / pivot). The binary verdict is shrunk
     toward the uninformative midpoint 0.5 when evidence is scarce — a verdict
     backed by no relations carries no information, so it must not score as if
@@ -729,11 +731,22 @@ def write_report(df, examples: list[Example], out_path: Path) -> None:
                    f"(weighted {e.scc_weighted:.2f})")
         out.append(f"  symbolic support: {support}  "
                    f"=> {'consistent' if e.consistent else 'inconsistent'}")
+        n_rel = sum(len(p.get("relations", [])) for p in e.relations.values())
+        if e.consistent and n_rel == 0:
+            symbolic_part = (f"the symbolic layer found no evidence at all, "
+                             f"which counts as consistent for "
+                             f"'{e.label_name}' via the residual rule")
+        elif e.consistent:
+            symbolic_part = (f"the symbolic layer found knowledge-base "
+                             f"evidence consistent with the "
+                             f"'{e.label_name}' label")
+        else:
+            symbolic_part = (f"the symbolic layer found no knowledge-base "
+                             f"evidence supporting the "
+                             f"'{e.label_name}' label")
         out.append(f"  why diverge: CCT proxy says the explanation leans "
                    f"{'heavily' if e.cct_proxy and e.cct_proxy > 0.5 else 'little'} "
-                   f"on its IAs, while the symbolic layer found "
-                   f"{'matching' if e.consistent else 'no matching'} "
-                   f"ConceptNet evidence for the '{e.label_name}' label.")
+                   f"on its IAs, while {symbolic_part}.")
     out_path.write_text("\n".join(out) + "\n", "utf-8")
     log.info("Wrote %s", out_path)
 

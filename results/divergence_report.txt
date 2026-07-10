@@ -1,0 +1,110 @@
+Elenchus — Top 10 CCT/SCC divergence cases
+============================================================
+
+Mean |CCT_proxy - SCC| divergence by label
+============================================
+  neutral        mean=0.837  std=0.111  n=33
+  entailment     mean=0.508  std=0.182  n=33
+  contradiction  mean=0.363  std=0.186  n=34
+
+Highest mean divergence: 'neutral' (hypothesis predicts 'neutral').
+
+Component means by label (CCT proxy / SCC / weighted SCC)
+--------------------------------------------
+  contradiction  cct=0.355  scc=0.029  scc_w=0.059
+  entailment     cct=0.515  scc=0.273  scc_w=0.273
+  neutral        cct=0.163  scc=1.000  scc_w=0.964
+
+Permutation test (neutral vs. rest, one-sided): delta_mean=+0.403, p=0.0001 (10000 shuffles)
+
+------------------------------------------------------------
+
+#1  divergence=1.000  label=neutral
+  premise   : A large group of people gather at a piano bar.
+  hypothesis: A group of men at a piano bar
+  explanation: People are not assumed to be men.
+  IAs       : (none)
+  CCT proxy : 0.000   SCC score : 1   (weighted 0.50)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found no evidence at all, which counts as consistent for 'neutral' via the residual rule.
+
+#2  divergence=0.960  label=neutral
+  premise   : A group of women playing volleyball indoors.
+  hypothesis: Awoman serves the volleyball.
+  explanation: It is unclear that the woman serves the ball as a part of her role in the game.
+  IAs       : serves
+  CCT proxy : 0.040   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#3  divergence=0.958  label=neutral
+  premise   : Two men spar in martial arts gear.
+  hypothesis: They are wearing all black gear.
+  explanation: Two men don't have any specified gear color while the others are wearing black gear.
+  IAs       : black
+  CCT proxy : 0.042   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#4  divergence=0.953  label=neutral
+  premise   : A group of people are gathered on a sidewalk in front of a store nearby a littered street.
+  hypothesis: A group of people are considering whether to shop at the store.
+  explanation: Just because a group of people are in front of a store does not mean they are considering to shop there.  They could be doing something else.
+  IAs       : considering
+  CCT proxy : 0.047   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#5  divergence=0.947  label=neutral
+  premise   : man doing carpentry or construction on top of an unfinished building.
+  hypothesis: The carpenter was almost finished.
+  explanation: A man doing carpentry may not be a carpenter. An unfinished building may not be almost finished.
+  IAs       : carpenter, almost, finished
+  CCT proxy : 0.053   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#6  divergence=0.946  label=neutral
+  premise   : There are five singers on a stage, three women and two men.
+  hypothesis: The people performing are part of a chorus.
+  explanation: Singing on a stage does not make you part of a chorus, people in plays and other performing arts may sing on stage.
+  IAs       : chorus
+  CCT proxy : 0.054   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#7  divergence=0.934  label=neutral
+  premise   : Two men are interacting with some sort of mechanical contraption that is mounted on a wall.
+  hypothesis: Some mechanics at work.
+  explanation: Only because men are interacting with some sort of mechanical contraption doesn't necessarily mean they are mechanics.
+  IAs       : mechanics
+  CCT proxy : 0.066   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#8  divergence=0.930  label=neutral
+  premise   : Man jumping up in the air and splitting his legs with his mouth open.
+  hypothesis: A man is performing in front of a crowd.
+  explanation: Just because a man is doing the splits does not mean he is performing.
+  IAs       : performing
+  CCT proxy : 0.070   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#9  divergence=0.929  label=neutral
+  premise   : A man in a business suit has just crossed the street.
+  hypothesis: The man is walking to work.
+  explanation: The second sentence explains the man is going to work and not some other destination
+  IAs       : work
+  CCT proxy : 0.071   SCC score : 1   (weighted 1.00)
+  symbolic support: neutral  => consistent
+  why diverge: CCT proxy says the explanation leans little on its IAs, while the symbolic layer found knowledge-base evidence consistent with the 'neutral' label.
+
+#10  divergence=0.911  label=entailment
+  premise   : The large white bird grazes the water.
+  hypothesis: The bird is touching the water
+  explanation: Large white bird is a bird.
+  IAs       : large, white, bird
+  CCT proxy : 0.911   SCC score : 0   (weighted 0.00)
+  symbolic support: neutral  => inconsistent
+  why diverge: CCT proxy says the explanation leans heavily on its IAs, while the symbolic layer found no knowledge-base evidence supporting the 'entailment' label.

@@ -49,8 +49,9 @@ and fixed; all fixes are in `pipeline.py` / `rules.lp`.
   This also makes the run fully deterministic and reproducible.
 - **CCT proxy:** `1 − cos(emb(explanation), emb(explanation \ IAs))` with
   `all-MiniLM-L6-v2`, as in the repo. Note this is an *embedding-shift proxy*,
-  not Atanasova et al.'s actual CCT (which measures the explained model's
-  prediction shift under counterfactual insertions).
+  not Siegel et al.'s actual CCT (which correlates the explained model's
+  prediction shift under counterfactual insertions, measured as total
+  variation distance, with explanation mentions).
 - **Command:** `python pipeline.py --n 100 --kb wordnet --out-dir results`
 
 ## 3. Results
